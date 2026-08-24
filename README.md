@@ -15,7 +15,7 @@
 <!-- INDEX:START -->
 | 日期 | 结论 | 领域 | 难度 | 链接 |
 |------|------|------|------|------|
-| 2026-08-24 | Borel-Cantelli 引理（第一部分） | 概率论 | ★★☆ | [查看](content/2026/08/2026-08-24-borel-cantelli-lemma-1.md) |
+| 2026-08-24 | 三个常用分布计算：正态偶数阶矩、Gamma 积分与正态样本的极坐标独立性 | 概率论 | ★★☆ | [查看](content/2026/08/2026-08-24-normal-moments-gamma-polar.md) |
 <!-- INDEX:END -->
 
 > 索引由 `.github/workflows/update-index.yml` 自动维护，push 时扫描 `content/**/*.md` 生成。手动编辑请在锚点外进行。
