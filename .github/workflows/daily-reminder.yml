@@ -1,0 +1,130 @@
+name: Daily Reminder
+
+on:
+  schedule:
+    # 每天 20:00 Asia/Shanghai = 12:00 UTC
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if today's entry exists
+        id: check
+        run: |
+          TODAY=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
+          YEAR=$(TZ='Asia/Shanghai' date +%Y)
+          MONTH=$(TZ='Asia/Shanghai' date +%m)
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+          echo "year=$YEAR" >> $GITHUB_OUTPUT
+          echo "month=$MONTH" >> $GITHUB_OUTPUT
+
+          # 兼容两种路径：content/YYYY/MM/YYYY-MM-DD-slug.md 和 content/YYYY-MM-DD-slug.md
+          if ls content/"$YEAR"/"$MONTH"/"$TODAY"*.md 2>/dev/null | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ 今日条目已存在：content/$YEAR/$MONTH/$TODAY*.md"
+          elif ls content/"$TODAY"*.md 2>/dev/null | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ 今日条目已存在：content/$TODAY*.md"
+          elif find content -name "$TODAY*.md" -print -quit 2>/dev/null | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ 今日条目已存在：content/**/$TODAY*.md (via find)"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️ 今日条目不存在，将创建提醒 Issue"
+          fi
+
+      - name: Check if today's issue already exists
+        if: steps.check.outputs.exists == 'false'
+        id: issue_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TODAY="${{ steps.check.outputs.today }}"
+          TITLE="📐 Daily Math — $TODAY 待完成"
+          # 搜索当天已存在的 open issue，避免重复创建
+          COUNT=$(gh issue list --state open --search "in:title \"$TITLE\"" --json title --jq length 2>/dev/null || echo "0")
+          echo "existing_count=$COUNT" >> $GITHUB_OUTPUT
+          if [ "$COUNT" -gt 0 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "ℹ️ 今日提醒 Issue 已存在，跳过创建"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create reminder issue
+        if: steps.check.outputs.exists == 'false' && steps.issue_check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TODAY="${{ steps.check.outputs.today }}"
+          YEAR="${{ steps.check.outputs.year }}"
+          MONTH="${{ steps.check.outputs.month }}"
+
+          cat > /tmp/issue_body.md << EOF
+          > ⏰ **每晚 20:00 自动提醒** — 若今日已完成请直接关闭本 Issue
+
+          ## 今日任务 — $TODAY
+
+          - [ ] 选题：从 backlog 或让 Agent 推荐 3 选 1
+          - [ ] 撰写：复制 \`content/template.md\` 到 \`content/$YEAR/$MONTH/$TODAY-<slug>.md\`
+          - [ ] 填写：结论陈述 → Sketch（可选） → **完整证明**（必须） → 注记 → 参考文献
+          - [ ] 自检：见 [AGENTS.md](../blob/main/AGENTS.md#step-3--自检-checklist) Checklist
+          - [ ] 提交：\`git add && git commit -m "feat: $TODAY - <标题>" && git push\`
+
+          ### 快速创建
+
+          \`\`\`bash
+          ./scripts/new-entry.sh "<slug>"
+          # 或手动
+          cp content/template.md content/$YEAR/$MONTH/$TODAY-<slug>.md
+          \`\`\`
+
+          ### 让 Agent 帮忙
+
+          在本 Issue 下评论：
+
+          > 今天写什么？
+
+          Agent 将扫描 \`content/\` 去重，推荐 3 个候选结论供你选择。
+
+          ### 偷懒选项
+
+          - 今天太忙：在下方评论 \`skip: 原因\`，保持 streak 诚实，不创建空文件
+          - 需要补更：文件日期用实际归属日，commit 标注 \`(backfill)\`
+
+          ---
+
+          *本 Issue 由 \`daily-reminder.yml\` 自动创建，20:00 Asia/Shanghai 触发。已完成则自动去重不再打扰。邮件已推送至你的 GitHub 绑定邮箱。*
+          EOF
+
+          gh issue create \
+            --title "📐 Daily Math — $TODAY 待完成" \
+            --body-file /tmp/issue_body.md \
+            --label "daily-math,reminder" 2>/dev/null || \
+          gh issue create \
+            --title "📐 Daily Math — $TODAY 待完成" \
+            --body-file /tmp/issue_body.md
+
+          echo "✅ 提醒 Issue 已创建"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Daily Reminder — ${{ steps.check.outputs.today }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.exists }}" == "true" ]; then
+            echo "✅ 今日条目已存在，无需提醒。" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.issue_check.outputs.skip }}" == "true" ]; then
+            echo "ℹ️ 今日 Issue 已存在，跳过。" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "📬 已创建提醒 Issue（邮件推送至 GitHub 绑定邮箱）。" >> $GITHUB_STEP_SUMMARY
+          fi

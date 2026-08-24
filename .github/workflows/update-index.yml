@@ -1,0 +1,148 @@
+name: Update Index
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "content/**/*.md"
+      - ".github/workflows/update-index.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install pyyaml python-frontmatter 2>/dev/null || pip install pyyaml
+
+      - name: Generate index
+        run: |
+          python3 << 'PY'
+          import re
+          import glob
+          from pathlib import Path
+
+          # Try to use python-frontmatter if available, else manual
+          try:
+              import frontmatter as fm
+              has_fm = True
+          except ImportError:
+              has_fm = False
+              print("python-frontmatter not installed, using regex fallback")
+
+          def parse_file(path):
+              text = Path(path).read_text(encoding="utf-8")
+              meta = {}
+              body = text
+              if has_fm:
+                  try:
+                      post = fm.loads(text)
+                      meta = post.metadata or {}
+                  except Exception as e:
+                      print(f"warn: {path}: {e}")
+              else:
+                  m = re.match(r'^---\s*\n(.*?)\n---\s*\n', text, re.DOTALL)
+                  if m:
+                      import yaml
+                      try:
+                          meta = yaml.safe_load(m.group(1)) or {}
+                      except Exception as e:
+                          print(f"warn yaml {path}: {e}")
+              # fallback: extract title from first # heading
+              title = meta.get("title") or ""
+              if not title:
+                  hm = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
+                  if hm:
+                      title = hm.group(1).strip()
+                  else:
+                      title = Path(path).stem
+              date = str(meta.get("date") or "")
+              # infer date from path if missing: YYYY-MM-DD or YYYY/MM/DD
+              if not date:
+                  dm = re.search(r'(\d{4}-\d{2}-\d{2})', path)
+                  if dm:
+                      date = dm.group(1)
+                  else:
+                      dm = re.search(r'(\d{4}/\d{2}/\d{2})', path)
+                      if dm:
+                          date = dm.group(1).replace("/", "-")
+              area = meta.get("area") or ""
+              difficulty = meta.get("difficulty") or ""
+              # tags as string
+              # keep relative link
+              link = path
+              return {"title": title, "date": date, "area": area, "difficulty": difficulty, "path": path, "link": link}
+
+          files = sorted(glob.glob("content/**/*.md", recursive=True))
+          # exclude template
+          files = [f for f in files if "template" not in f.lower()]
+          entries = [parse_file(f) for f in files]
+          # sort by date desc
+          entries.sort(key=lambda x: x["date"], reverse=True)
+
+          # Build markdown table
+          if not entries:
+              table = "| 日期 | 结论 | 领域 | 难度 | 链接 |\n|------|------|------|------|------|\n| — | 暂无条目 | — | — | — |\n"
+          else:
+              header = "| 日期 | 结论 | 领域 | 难度 | 链接 |\n|------|------|------|------|------|\n"
+              rows = []
+              for e in entries:
+                  # escape | in title
+                  title = e["title"].replace("|", "\\|")
+                  date = e["date"] or "—"
+                  area = e["area"] or "—"
+                  diff = e["difficulty"] or "—"
+                  link = f"[查看]({e['link']})"
+                  rows.append(f"| {date} | {title} | {area} | {diff} | {link} |")
+              table = header + "\n".join(rows) + "\n"
+
+          # Update README between markers
+          readme = Path("README.md")
+          content = readme.read_text(encoding="utf-8")
+          start = "<!-- INDEX:START -->"
+          end = "<!-- INDEX:END -->"
+          if start not in content or end not in content:
+              print("ERROR: INDEX markers not found in README.md")
+              raise SystemExit(1)
+
+          new_content = re.sub(
+              re.escape(start) + r".*?" + re.escape(end),
+              f"{start}\n{table}{end}",
+              content,
+              flags=re.DOTALL,
+          )
+
+          if new_content != content:
+              readme.write_text(new_content, encoding="utf-8")
+              print("README index updated")
+              # also print table for log
+              print(table)
+          else:
+              print("README already up to date")
+
+          PY
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet README.md; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: auto update README index"
+          git push
